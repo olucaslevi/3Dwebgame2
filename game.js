@@ -1,21 +1,12 @@
 import * as THREE from 'three';
-import Player from './controllers/Player';
+import { Player, Warrior, Archer } from './controllers/Player';
 import TerrainManager from './controllers/terrainManager';
 import { Tower } from './controllers/towerController';
 import Soldier from './controllers/Soldier';
 import InputManager from './input';
 import CameraController from './controllers/cameraManager';
-import ConnectController from './controllers/connectController';
 import ModelController from './controllers/modelController';
-
-
-// TODO adicionar efeitos de dano
-// TODO adicionar indicadores visuais de inicio e fim de jogo condicionados à vida da torre
-// TODO transferir p/ websocket
-// TODO adicionar sons ao jogo (tiro, morte, dano, etc)
-// TODO adicionar efeitos visuais ao jogo (explosões, fumaça, etc)
-// TODO adicionar um sistema de pontuação e tempo
-
+import GameGUI from './controllers/gameGUI';
 
 class Game {
     constructor() {
@@ -29,124 +20,143 @@ class Game {
         this.raycaster = new THREE.Raycaster();
         this.terrain = null;
         this.cameraController = null;
-        this.webSocketClient = new ConnectController();
         this.modelController = new ModelController(this.scene);
         this.clock = new THREE.Clock();
+        this.gameGUI = null;
+        this.spawnInterval = null;
+        this.isIA = false;
     }
-    start() {
-        
+    start(selectedClass) {
         this.createTerrain();
-        this.createPlayers();
-        this.createTowers();
         this.createCamera();
-        // const axesHelper = new THREE.AxesHelper(10)
-        // this.scene.add(axesHelper);
-        this.towers.forEach((tower, index) => {
-            //se index for impar, é vermelho
-            const color = index % 2 === 0 ? 'blue' : 'red';
-            this.createSoldier(tower, color);
-        });
+        this.createPlayers(selectedClass);
+        this.gameGUI = new GameGUI(this.getCurrentPlayer(),this);
+        this.createTowers();
+        this.renderer.shadowMap.enabled = true;
+        this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
         this.renderer.setSize(window.innerWidth, window.innerHeight);
         document.body.appendChild(this.renderer.domElement);
-        // Iniciar gerenciador de comandos de entrada
-        this.inputManager = new InputManager(this.raycaster,this.camera, this.terrain, this.getCurrentPlayer(), this.soldiers, this.towers);
-        // Inicie a renderização do jogo
+        this.inputManager = new InputManager(this.raycaster, this.camera, this.terrain, this.getCurrentPlayer(), this.soldiers, this.towers);
+        this.gameGUI.startTimer();
         this.animate();
     }
-
-    // Adiciona um jogador à lista de jogadores
     addPlayer(player) {
         this.players.push(player);
     }
-
-    // Define o jogador atual com base no índice fornecido
     setCurrentPlayer(index) {
         if (index >= 0 && index < this.players.length) {
             this.currentPlayerIndex = index;
         }
     }
-
-    // Obtém o jogador atual
+    updatePlayerCoordinates() {
+        const player = this.getCurrentPlayer(); // Obtém o jogador atual
+        if (player) {
+            const position = player.getPosition(); // Método que retorna a posição do jogador
+            document.getElementById('coord-x').textContent = `${position.x.toFixed(1)}`;
+            document.getElementById('coord-y').textContent = `${position.y.toFixed(1)}`;
+        }
+    }    
     getCurrentPlayer() {
         return this.players[this.currentPlayerIndex];
     }
-    
-
     animate() {
-        // update mixers in modelcontroller
-        this.players.forEach(player => player.update());
-        if (this.cameraController) { // Verifique se o cameraController existe antes de atualizá-lo
+        const delta = this.clock.getDelta();
+        this.updatePlayerCoordinates(); 
+        this.players.forEach(player => player.update(delta));
+        if (this.cameraController) {
             this.cameraController.update();
         }
         this.soldiers.forEach(soldier => soldier.update(this.players, this.soldiers, this.towers));
         this.towers.forEach(tower => tower.update(this.getCurrentPlayer(), this.soldiers, this.towers));
-        for (let i = this.soldiers.length - 1; i >= 0; i--) {
-            if (this.soldiers[i].health <= 0) {
-                this.soldiers[i].mesh.geometry.dispose();
-                this.soldiers[i].mesh.material.dispose();
-                this.scene.remove(this.soldiers[i].mesh);
-                this.soldiers.splice(i, 1);
-            }
-        }
-        for (let i = this.towers.length - 1; i >= 0; i--) {
-            if (this.towers[i].health <= 0) {
-                this.towers[i].mesh.geometry.dispose();
-                this.towers[i].mesh.material.dispose();
-                this.scene.remove(this.towers[i].mesh);
-                this.towers.splice(i, 1);
-            }
-        }
-        const delta = this.clock.getDelta();
+        this.gameGUI.update();
+        // Remover soldados e torres com saúde <= 0
+        this.removeDeadObjects(this.soldiers);
+        this.removeDeadObjects(this.towers);
         this.modelController.update(delta);
         this.renderer.render(this.scene, this.camera);
+
+        if (this.checkGameOver()) {
+            return;  // Não continua animando se o jogo acabou
+        }
         requestAnimationFrame(() => this.animate());
+
+        // Atualizar animações de mixers
         this.scene.children.forEach(child => {
-            if (child.userData.mixer){
-                const delta = this.clock.getDelta();
+            if (child.userData.mixer) {
                 child.userData.mixer.update(delta);
             }
         });
     }
+    removeDeadObjects(objects) {
+        for (let i = objects.length - 1; i >= 0; i--) {
+            if (objects[i].health <= 0) {
+                objects[i].mesh.geometry.dispose();
+                objects[i].mesh.material.dispose();
+                this.scene.remove(objects[i].mesh);
+                objects.splice(i, 1);
+            }
+        }
+    }
+
+    
+    showEndScreen(message) {
+        document.getElementById('end-message').textContent = message;
+        document.getElementById('end-screen').style.display = 'flex';
+    }
+    checkGameOver() {
+        if (this.getCurrentPlayer().healthPoints <= 0) {
+            this.showEndScreen('Você morreu!');  // Mensagem de fim de jogo
+            return true;  // Indica que o jogo acabou
+        }
+        
+        // Verifica se o tempo acabou
+        if (this.gameGUI.getTime() <= 0) {
+            this.showEndScreen('Tempo esgotado!');  // Mensagem de fim de jogo
+            return true;  // Indica que o jogo acabou
+        }
+    
+        // Verifica se todas as torres do time adversário foram destruídas
+        const opponentTeam = this.getCurrentPlayer().team === 'blue' ? 'red' : 'blue';
+        const opponentTowers = this.towers.filter(tower => tower.getTeam() === opponentTeam);
+        if (opponentTowers.every(tower => tower.healthPoints <= 0)) {
+            this.showEndScreen('Você venceu! Todas as torres inimigas foram destruídas!'); // Mensagem de fim de jogo
+            return true;  // Indica que o jogo acabou
+        }
+    
+        // Verifica se todas as torres do time do jogador foram destruídas
+        const playerTowers = this.towers.filter(tower => tower.getTeam() === this.getCurrentPlayer().team);
+        if (playerTowers.every(tower => tower.healthPoints <= 0)) {
+            this.showEndScreen('Você perdeu! Todas as suas torres foram destruídas!'); // Mensagem de fim de jogo
+            return true;  // Indica que o jogo acabou
+        }
+    
+        return false;
+    }
+    
     createTerrain() {
-        const terrain = new TerrainManager(this.scene).createTerrain();
-        this.scene.add(terrain);
-        this.terrain = terrain;
+        this.terrain = new TerrainManager(this.scene).createTerrain();
+        this.scene.add(this.terrain);
     }
     createTowers() {
-        const tower1 = new Tower(this.scene, new THREE.Vector3(-40, 40, 0), 24, 100, 1000, 1000, this.camera, 'blue');
-        const tower2 = new Tower(this.scene, new THREE.Vector3(40, -10, 0), 24, 100, 1000, 10,this.camera, 'red');
-        const tower3 = new Tower(this.scene, new THREE.Vector3(-40, 10, 0), 24, 100, 1000, 1000, this.camera, 'blue');
-        const tower4 = new Tower(this.scene, new THREE.Vector3(0, -10, 0), 24, 100, 1000, 10,this.camera, 'red');
-        const tower5 = new Tower(this.scene, new THREE.Vector3(-30, 20, 0), 24, 100, 1000, 1000, this.camera, 'blue');
-        const tower6 = new Tower(this.scene, new THREE.Vector3(50, 10, 0), 24, 100, 1000, 1000, this.camera, 'red');
-        this.towers.push(tower1, tower2, tower3, tower4, tower5, tower6);
+        const tower_blue_1 = new Tower(this.scene, new THREE.Vector3(-31,-34, 0), 24, 100, 100, 5, this.camera, 'blue',this.gameGUI);
+        const tower_red_1 = new Tower(this.scene, new THREE.Vector3(51,5, 0), 24, 100, 100, 5, this.camera, 'red',this.gameGUI);
+        const tower_blue_2 = new Tower(this.scene, new THREE.Vector3(-61, -52, 0), 24, 100, 100, 5, this.camera, 'blue',this.gameGUI);
+        const tower_red_2 = new Tower(this.scene, new THREE.Vector3(15,5, 0), 24, 100, 100, 5, this.camera, 'red',this.gameGUI);
+        this.towers.push(tower_blue_1, tower_red_1, tower_blue_2, tower_red_2);
     }
-    createPlayers() {
-            const player1 = new Player(this.scene, new THREE.Vector3(-40, 0, 0), this.camera, this.renderer, 'blue');
-            const player2 = new Player(this.scene, new THREE.Vector3(40, 0, 0), this.camera, this.renderer, 'red');
-            this.players.push(player1, player2);
+    createPlayers(selectedClass) {
+        let player;
+        const position = new THREE.Vector3(-42,-50, 0);
+        if (selectedClass === 'Warrior') {
+            player = new Warrior(this.scene, position, this.camera, this.renderer, 'blue', this.cameraController);
+        } else if (selectedClass === 'Archer') {
+            player = new Archer(this.scene, position, this.camera, this.renderer, 'blue', this.cameraController);
+        }
+        this.players.push(player);
     }
-
-    createSoldier(tower, color) {
-        const health = Math.floor(Math.random() * (10 - 30) + 80);
-        const damage = Math.floor(Math.random() * (12 - 9) + 28);
-        const speed = Math.random() * (0.09 - 0.08) + 0.08;
-        const position = tower.getPosition().clone();
-        position.x += Math.random(-5, 5);
-        position.y += Math.random(-5, 5);
-        position.z = 0;
-
-        const soldier = new Soldier(this.scene, position, null, 2, 12, speed, 100, 100, 10, color);
-        this.soldiers.push(soldier);
-    };
-    render() {
-        this.renderer.render(this.scene, this.camera);
-    };
-
     createCamera() {
-        this.cameraController = new CameraController(this.camera, this.getCurrentPlayer());
-    }
-
+        // Passe uma função para acessar o jogador atual dinamicamente
+        this.cameraController = new CameraController(this.camera, () => this.getCurrentPlayer());
+    } 
 }
-
 export default Game;
